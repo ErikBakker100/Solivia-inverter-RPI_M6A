@@ -1,0 +1,365 @@
+# *****************************************************************
+# *          ESPHome Custom Component Modbus sniffer for          *
+# *              Delta Solvia Inverter RPI M6A               *
+# *             installed with Solivia Gateway M1 D2.             *
+# *****************************************************************
+#
+# Remember to copy the Custom Component soliviaM6A.h file to the ESPHome folder in
+# Home Assistant !!
+#
+# This config doesn't send any commands to the inverter !!
+# Instead it relies on the gateways constant request for data (appx. 1 package pr. second).
+#
+# If you don't have a gateway, the package request can instead easily be send from
+# ESPHome using uart.write and eg. triggered via the ESPHome Time component.
+#
+# Example:
+# time:
+#   - platform: homeassistant
+#     id: esptime
+#   - platform: sntp
+#     on_time:
+#        # Request package every 10 seconds from inverter at slave address: 0x01
+#       - seconds: /10
+#         then:
+#           - uart.write: [0x02, 0x05, 0x01, 0x02, 0x60, 0x01, 0x85, 0xFC, 0x03]
+# 
+#
+# NOTE !!
+# 
+# Most common inverter response length is 150 bytes (0x96) or 158 (0x9E).
+#
+# A list of all Delta Solivia inverters registers and the communication protocol is published
+# and can be found here: https://forums.ni.com/ni/attachments/ni/170/1007166/1/Public%20RS485%20Protocol%201V2.pdf
+#
+# Using above list, it will be easy to tweak my configuration to fit your inverter variant.
+#
+# I have tweaked this config and revised the registers to get a working solution
+# for my Delta Solivia RPI M6A: https://github.com/ErikBakker100/Solivia-Inverter-RPIM6A
+#
+# Tested on both ESP8266 with software & hardware uart and ESP32 with hardware uart only.
+# I experience minor ESPHome <--> Home Assistant connection issues using the ESP8266 software uart.
+# So I've revised my production config to use the hw uart pins instead. This is rock solid.
+# But remember to turn off debug communication on the uart pins.
+#
+# My config:
+# Inverter part no.: 602FA0E1000
+#
+# MQTT is enabled, no Home Assistant
+# Double string input 4500W
+# Three phase output: L1, L2, L3
+# Slave address: 0x01
+# Baud rate: 19200
+# Install country: Netherlands
+#
+# Gateway request: 02:05:01:02:60:01:85:FC:03
+# Inverter response: 02:06:01:A0:60:01 + 128 data bytes (excl. CRC bytes) + ETX byte
+#
+# The response matches the protocol, as well as the CRC bytes and trailing
+# CRC bytes and ETX byte should be excluded from data length identifier (0xA0)
+# 
+# Commmand for eg. inverters serial no. is working ok on my inverter.
+# - uart.write: [0x02, 0x05, 0x01, 0x02, 0x00, 0x01, 0xAD, 0xFC, 0x03] will response
+# correctly with serial no.
+
+esphome:
+  name: "delta-solivia-8266"
+  platform: ESP8266
+  board: esp12e
+  includes:
+    - soliviaM6A.h
+    
+# Enable logging
+# Set baud_rate to 0 if you're using hw uart, in order to disable logging via uart pins
+#logger:
+#  baud_rate: 115200
+#  level: VERY_VERBOSE 
+
+# Enable Home Assistant API
+#api:
+#  encryption:
+#    key: "my_api_key"
+
+# Enable MQTT
+mqtt:
+  broker: 192.168.1.21
+  username: mqtt
+  password: 1Edereen
+  id: mqtt_client
+
+ota:
+  password: ""
+
+wifi:
+  ssid: "HG655D-14581D"
+  password: "ULW397E9"
+  manual_ip:
+    static_ip: 192.168.1.26
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+  
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Fallback Hotspot"
+    password: ""
+
+captive_portal:
+
+uart:
+  id: mod_bus
+  #tx_pin: 17 # Typical tx pin for hardware UART#2 on ESP32 modules
+  #rx_pin: 16 # Typical rx pin for hardware UART#2 on ESP32 modules
+  #tx_pin: 5 # D1 ESP8266 tx pin for soft serial uart
+  #rx_pin: 4 # D2 ESP8266 rx pin for soft serial uart
+  tx_pin: 1 # D10 ESP8266 tx pin for hw serial uart
+  rx_pin: 3 # D9 ESP8266 tx pin for hw serial uart
+  # Increase buffer size as total package we're sniffing is 262 bytes in total
+  # Inverter reply: 6 bytes + Data: 255 bytes + ETX: 1 byte = 262 bytes
+  rx_buffer_size: 512
+  baud_rate: 19200
+#  debug: # Activate if you need to investigate package details in the log
+
+# Remove hash signs and activate, if you don't have a Solivia gataway.
+# With this you emulate the gateways request for data response from the inverter.
+# With settings below, the requests are send 1 second.
+#
+#time:
+#  - platform: homeassistant
+#    id: esptime
+#  - platform: sntp
+#    on_time:
+#       # Request package every 1 second from inverter at slave address: 0x01
+#      - seconds: /1
+#        then:
+#          - uart.write: [0x02, 0x05, 0x01, 0x02, 0x60, 0x01, 0x85, 0xFC, 0x03]
+
+binary_sensor:
+  - platform: status
+    name: "Solivia M6A Status"
+    id: solivia_status
+
+sensor:
+- platform: custom
+  lambda: |-
+    auto delta = new solivia(id(mod_bus));
+    App.register_component(delta);
+    return {delta->ac_v1, delta->ac_a1, delta->ac_p1, delta->ac_f1, delta->ac_v2, delta->ac_a2, delta->ac_p2, delta->ac_f2, delta->ac_v3, delta->ac_a3, delta->ac_p3, delta->ac_f3, delta->dc_v1, delta->dc_a1, delta->dc_p1, delta->dc_v2, delta->dc_a2, delta->dc_p2};
+
+  sensors:
+  - name: "Solar AC voltage L1"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    filters:
+    - multiply: 0.1
+    
+  - name: "Solar AC current L1"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar AC power L1"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: W
+    accuracy_decimals: 0
+
+  - name: "Solar AC frequency L1"
+    device_class: energy
+    unit_of_measurement: Hz
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar AC voltage L2"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    filters:
+    - multiply: 0.1
+    
+  - name: "Solar AC current L2"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar AC power L2"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: W
+    accuracy_decimals: 0
+
+  - name: "Solar AC frequency L2"
+    device_class: energy
+    unit_of_measurement: Hz
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar AC voltage L3"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    filters:
+    - multiply: 0.1
+    
+  - name: "Solar AC current L3"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar AC power L3"
+    #icon: mdi:SolarPowerVariant
+    device_class: energy
+    unit_of_measurement: W
+    accuracy_decimals: 0
+
+  - name: "Solar AC frequency L3"
+    device_class: energy
+    unit_of_measurement: Hz
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+    
+  - name: "Solar DC voltage line 1"
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    filters:
+    - multiply: 0.1
+
+  - name: "Solar DC current line 1"
+    device_class: energy
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+  
+  - name: "Solar DC power line 1"
+    device_class: energy
+    unit_of_measurement: W
+    accuracy_decimals: 0
+  
+  - name: "Solar DC voltage line 2"
+    device_class: energy
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    filters:
+    - multiply: 0.1
+
+  - name: "Solar DC current line 2"
+    device_class: energy
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    filters:
+    - multiply: 0.01
+  
+  - name: "Solar DC power line 2"
+    device_class: energy
+    unit_of_measurement: W
+    accuracy_decimals: 0
+   
+# Example on how to return a text string instead of the binary inverter night status 
+#text_sensor:
+#  - platform: template
+#    name: "Solivia night status"
+#    # Check bit 2 for night status
+#    lambda: |-
+#      if (((int(id(status_ac_out2).state)) >> (2)) & 1) return (std::string)"Inverter idle"; else return (std::string)"Inverter active";
+
+# Complete 'live' package example - captured [1-3-2023]:
+
+# Request:  02:05:01:02:60:01:85:FC:03
+# Response: 02:06:01:A0:60:01
+
+# Package data:
+#         0: 1: 2: 3: 4: 5: 6: 7: 8: 9: A: B: C: D: E: F
+# 0x00   36:30:32:46:41:30:45:31:30:30:30:4F:31:52:31:34
+# 0x10   43:30:30:32:32:38:57:43:30:39:30:31:30:00:01:33
+# 0x20   14:33:01:0F:10:1E:01:22:14:32:00:00:00:00:00:00
+# 0x30   00:00:0F:A3:00:C6:01:BF:13:85:0F:A0:13:84:0F:9B
+# 0x40   00:C7:01:C1:13:85:0F:A3:13:84:0F:AF:00:C6:01:BE
+# 0x50   13:85:0F:A5:13:84:0B:94:00:C7:02:4E:0F:F7:00:C6
+# 0x60   03:2B:05:3E:0B:96:0B:7C:00:00:21:34:00:00:3E:F1
+# 0x70   00:00:05:A2:00:50:6C:9B:00:30:00:00:00:00:00:00
+# 0x80   00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00
+# 0x90   00:00:00:00:00:00:00:00:00:00:00:00:00:00:ED:DF
+# 0xA0   03
+
+# Register address:
+# 0x00 - 0x0A:  SAP part no.                602FA0E1000     36:30:32:46:41:30:45:31:30:30:30
+# 0x0B - 0x17:  SAP serial no.              O1R14C00228WC   4F:31:52:31:34:43:30:30:32:32:38:57:43
+# 0x18 - 0x1B:  SAP date code               0901            30:39:30:31
+# 0x1C - 0x1D:  SAP revision                12288           30:00
+# 0x1E - 0x1F:  DSP FW Rev                  1.51            01:33
+# 0x20 - 0x21:  DSP FW Date                 5171            14:33
+# 0x22 - 0x23:  Redundant MCU FW Rev.       1.15            01:0F
+# 0x24 - 0x25:  Redundant MCU FW Date       4126            10:1E
+# 0x26 - 0x27:  Display MCU FW Rev.         1.34            01:22
+# 0x28 - 0x29:  Display MCU FW Date         5170            14:32
+# 0x2A - 0x2B:  Display WebPage Ctrl FW Rev 0               00:00
+# 0x2C - 0x2D:  Display WebPage Ctrl FW Dat 0               00:00
+# 0x2E - 0x2F:  Display WiFi Ctrl FW Rev    0               00:00    
+# 0x30 - 0x31:  Display WiFi Ctrl FW Date   0               00:00
+# 0x32 - 0x33:  AC Voltage(Phase1)          400.3           0F:A3           V   Value/10
+# 0x34 - 0x35:  AC Current(Phase1)          1.98            00:C6           A   Value/100
+# 0x36 - 0x37:  AC Power(Phase1)            447             01:BF           W
+# 0x38 - 0x39:  AC Frequency(Phase1)        49.97           13:85           Hz  Value/100
+# 0x3A - 0x3B:  AC Voltage(Phase1) Redundan 400             0F:A0           V   Value/10
+# 0x3C - 0x3D:  AC Frequency(Phase1) Redund 49.96           13:84           Hz  Value/100
+# 0x3E - 0x3F:  AC Voltage(Phase2)          399.5           0F:9B           V   Value/10
+# 0x40 - 0x41:  AC Current(Phase2)          1.99            00:C7           A   Value/100
+# 0x42 - 0x43:  AC Power(Phase2)            449             01:C1           W
+# 0x44 - 0x45:  AC Frequency(Phase2)        49.97           13:85           Hz  Value/100
+# 0x46 - 0x47:  AC Voltage(Phase2) Redundan 400.3           0F:A3           V   Value/10
+# 0x48 - 0x49:  AC Frequency(Phase2) Redund 49.96           13:84           Hz  Value/100
+# 0x4A - 0x4B:  AC Voltage(Phase3)          401.5           0F:AF           V   Value/10
+# 0x4C - 0x4D:  AC Current(Phase3)          1.98            00:C6           A   Value/100
+# 0x4E - 0x4F:  AC Power(Phase3)            446             01:BE           W
+# 0x50 - 0x51:  AC Frequency(Phase3)        49.97           13:85           Hz  Value/100
+# 0x52 - 0x53:  AC Voltage(Phase3) Redundan 400.5           0F:A5           V   Value/10
+# 0x54 - 0x55:  AC Frequency(Phase3) Redund 49.96           13:84           Hz  Value/100
+# 0x56 - 0x57:  Solar Voltage at Input 1    296.4           0B:94           V   Value/10
+# 0x58 - 0x59:  Solar Current at Input 1    1.99            00:C7           A   Value/100
+# 0x5A - 0x5B:  Solar Power at Input 1      590             02:4E           W
+# 0x5C - 0x5D:  Solar Voltage at Input 2    408.7           0F:F7           V   Value/10
+# 0x5E - 0x5F:  Solar Current at Input 1    1.98            00:C6           A   Value/100
+# 0x60 - 0x61:  Solar Power at Input 2      811             03:2B           W
+# 0x62 - 0x63:  ACPower                     1342            05:3E           W
+# 0x64 - 0x65:  (+) Bus Voltage             296.6           0B:96           V   Value/10
+# 0x66 - 0x67:  (-) Bus Voltage             294.0           0B:7C           V   Value/10
+# 0x68 - 0x6B:  Supplied ac energy today    8500            00:00:21:34     Wh
+# 0x6C - 0x6F:  Inverter runtime today      16113           00:00:3E:F1     second
+# 0x70 - 0x73:  Supplied ac energy (total)  1442            00:00:05:A2     kWh
+# 0x74 - 0x77:  Inverter runtime(total)     5270683         00:50:6C:9B     second
+# 0x78 - 0x79:  Temperature inside rack     48              00:30           degrees Celsius Signed int16
+# 0x7A          Status AC Output 1          0               00              1 Byte
+# 0x7B          Status AC Output 2          0               00              1 Byte
+#                   Bit 2: No Grid When inverter is active bit#02 is cleared. When inactive bit#02 is set.
+# 0x7C          Status AC Output 3          0               00              1 Byte
+# 0x7D          Status AC Output 4          0               00              1 Byte
+# 0x7E          Status DC Input 1           0               00              1 Byte
+# 0x7F          Status DC Input 2           0               00              1 Byte
+# 0x80          Error Status                0               00              1 Byte
+# 0x81          Error Status AC 1           0               00              1 Byte
+# 0x82          Global Error 1              0               00              1 Byte
+# 0x83          CPU Error                   0               00              1 Byte
+# 0x84          Global Error 2              0               00              1 Byte
+# 0x85          Limits AC output 1          0               00              1 Byte
+# 0x86          Limits AC output 2          0               00              1 Byte
+# 0x87          Global Error 3              0               00              1 Byte
+# 0x88          Limits DC 1                 0               00              1 Byte
+# 0x89          Limits DC 1                 0               00              1 Byte
+# 0x8A - 0x9D   History status messages     0               00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00 20 Bytes
