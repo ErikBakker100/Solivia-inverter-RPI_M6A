@@ -1,0 +1,14 @@
+Test if the data is received from the serial port via: minicom -s (to get into setup mode)
+
+mkdir delta
+cd delta
+
+copy main.cpp tot delta directory on raspberry
+
+Install library https://github.com/gbmhunter/CppLinuxSerial
+
+compile with following command:  
+
+g++ main.cpp -lmosquitto -lCppLinuxSerial -o delta
+
+to run program ./delta
